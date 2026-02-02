@@ -17,7 +17,7 @@ router.get('/clients', authenticateToken, async (req, res) => {
         res.json({ success: true, data: clients });
     } catch (error) {
         console.error('Get clients error:', error);
-        res.status(500).json({ success: false, message: 'Failed to fetch clients' });
+        res.status(400).json({ success: false, message: 'Failed to fetch clients' });
     }
 });
 
@@ -27,7 +27,7 @@ router.post('/', authenticateToken, async (req, res) => {
         const { client_id, latitude, longitude, notes } = req.body;
 
         if (!client_id) {
-            return res.status(200).json({ success: false, message: 'Client ID is required' });
+            return res.status(400).json({ success: false, message: 'Client ID is required' });
         }
 
         // Check if employee is assigned to this client
@@ -53,10 +53,36 @@ router.post('/', authenticateToken, async (req, res) => {
             });
         }
 
+        const [[client]] = await pool.execute(
+            'SELECT lat, lng FROM clients WHERE id = ?',
+            [client_id]
+        );
+
+        function calculateDistance(lat1, lon1, lat2, lon2) {
+           const R = 6371; // km
+           const dLat = (lat2 - lat1) * Math.PI / 180;
+           const dLon = (lon2 - lon1) * Math.PI / 180;
+
+           const a =
+               Math.sin(dLat / 2) ** 2 +
+               Math.cos(lat1 * Math.PI / 180) *
+               Math.cos(lat2 * Math.PI / 180) *
+               Math.sin(dLon / 2) ** 2;
+
+           return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+        }
+
+        const distance = calculateDistance(
+            latitude,
+            longitude,
+            client.lat,
+            client.lng
+        );
+
         const [result] = await pool.execute(
-            `INSERT INTO checkins (employee_id, client_id, lat, lng, notes, status)
-             VALUES (?, ?, ?, ?, ?, 'checked_in')`,
-            [req.user.id, client_id, latitude, longitude, notes || null]
+            `INSERT INTO checkins (employee_id, client_id, lat, lng, distance_from_client, notes, status)
+             VALUES (?, ?, ?, ?, ?, ?, 'checked_in')`,
+            [req.user.id, client_id, latitude, longitude, distance, notes || null]
         );
 
         res.status(201).json({
@@ -74,27 +100,38 @@ router.post('/', authenticateToken, async (req, res) => {
 
 // Checkout from current location
 router.put('/checkout', authenticateToken, async (req, res) => {
-    try {
-        const [activeCheckins] = await pool.execute(
-            'SELECT * FROM checkins WHERE employee_id = ? ORDER BY checkin_time DESC LIMIT 1',
-            [req.user.id]
-        );
+  try {
+    const [[active]] = await pool.execute(
+      `SELECT id FROM checkins
+       WHERE employee_id = ?
+         AND status = 'checked_in'
+       ORDER BY checkin_time DESC
+       LIMIT 1`,
+      [req.user.id]
+    );
 
-        if (activeCheckins.length === 0) {
-            return res.status(404).json({ success: false, message: 'No active check-in found' });
-        }
-
-        await pool.execute(
-            'UPDATE checkins SET checkout_time = NOW(), status = "checked_out" WHERE id = ?',
-            [activeCheckins[0].id]
-        );
-
-        res.json({ success: true, message: 'Checked out successfully' });
-    } catch (error) {
-        console.error('Checkout error:', error);
-        res.status(500).json({ success: false, message: 'Checkout failed' });
+    if (!active) {
+      return res.status(400).json({
+        success: false,
+        message: 'No active check-in found'
+      });
     }
+
+    await pool.execute(
+      `UPDATE checkins
+       SET checkout_time = datetime('now'),
+           status = 'checked_out'
+       WHERE id = ?`,
+      [active.id]
+    );
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Checkout error:', err);
+    res.status(500).json({ success: false });
+  }
 });
+
 
 // Get check-in history
 router.get('/history', authenticateToken, async (req, res) => {
