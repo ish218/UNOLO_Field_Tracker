@@ -7,7 +7,12 @@ const router = express.Router();
 // Get dashboard stats for manager
 router.get('/stats', authenticateToken, requireManager, async (req, res) => {
     try {
-        const today = new Date().toISOString().split('T')[0];
+        const startOfDay = new Date();
+        startOfDay.setHours(0,0,0,0);
+
+        const endOfDay = new Date();
+        endOfDay.setHours(23,59,59,999);
+
 
         // Get team members
         const [teamMembers] = await pool.execute(
@@ -16,25 +21,21 @@ router.get('/stats', authenticateToken, requireManager, async (req, res) => {
         );
 
         // Get today's check-ins for the team
-        const startOfDay = new Date();
-        startOfDay.setHours(0,0,0,0);
-
-        const endOfDay = new Date();
-        endOfDay.setHours(23,59,59,999);
-
+        
         const [todayCheckins] = await pool.execute(
             `SELECT ch.*, u.name as employee_name, c.name as client_name
              FROM checkins ch
              INNER JOIN users u ON ch.employee_id = u.id
              INNER JOIN clients c ON ch.client_id = c.id
-             WHERE u.manager_id = ? AND ch.checkin_time BETWEEN ? AND ?
+             WHERE u.manager_id = ? AND 
+             ch.checkin_time BETWEEN ? AND ?
              ORDER BY ch.checkin_time DESC`,
             [req.user.id, startOfDay.toISOString(), endOfDay.toISOString()]
         );
 
         // Get active check-ins count
         const [activeCount] = await pool.execute(
-            `SELECT COUNT(*) as count FROM checkins ch
+            `SELECT COUNT(DISTINCT ch.employee_id) as count FROM checkins ch
              INNER JOIN users u ON ch.employee_id = u.id
              WHERE u.manager_id = ? AND ch.status = 'checked_in'`,
             [req.user.id]
@@ -58,16 +59,21 @@ router.get('/stats', authenticateToken, requireManager, async (req, res) => {
 // Get employee dashboard (for employees)
 router.get('/employee', authenticateToken, async (req, res) => {
     try {
-        const today = new Date().toISOString().split('T')[0];
 
         // Get today's check-ins
+        const startOfDay = new Date();
+        startOfDay.setHours(0,0,0,0);
+
+        const endOfDay = new Date();
+        endOfDay.setHours(23,59,59,999);
+
         const [todayCheckins] = await pool.execute(
             `SELECT ch.*, c.name as client_name
              FROM checkins ch
              INNER JOIN clients c ON ch.client_id = c.id
-             WHERE ch.employee_id = ? AND DATE(ch.checkin_time) = ?
+             WHERE ch.employee_id = ? AND ch.checkin_time BETWEEN ? AND ?
              ORDER BY ch.checkin_time DESC`,
-            [req.user.id, today]
+            [req.user.id,startOfDay.toISOString(), endOfDay.toISOString() ]
         );
 
         // Get assigned clients
@@ -81,7 +87,7 @@ router.get('/employee', authenticateToken, async (req, res) => {
         // Get this week's stats
         const [weekStats] = await pool.execute(
             `SELECT COUNT(*) as total_checkins,
-                    COUNT(DISTINCT client_id) as unique_clients
+             COUNT(DISTINCT client_id) as unique_clients
              FROM checkins
              WHERE employee_id = ? AND checkin_time >= DATE_SUB(NOW(), INTERVAL 7 DAY)`,
             [req.user.id]
